@@ -1,14 +1,14 @@
 # Betting Data Aggregation in ClickHouse
 
-Этот проект демонстрирует решение для инкрементальной агрегации данных ставок клиентов из потоковой таблицы `raw_bets` в ClickHouse. Данные содержат ставки с несколькими позициями, где сумма (`amount`) дублируется внутри одной ставки (`order`), и требуется подсчитать сумму уникальных ставок по пользователям (`user`).
+Этот проект реализует инкрементальную агрегацию данных ставок из потоковой таблицы `raw_bets` в ClickHouse, исключая дубли и зависимости от `OPTIMIZE`.
 
 ## Описание задачи
 
 - **Входные данные**: Таблица `raw_bets` с полями `user`, `order`, `order_position`, `amount`, `bet_date`.
-  - У одного пользователя может быть много ставок.
-  - У каждой ставки может быть несколько позиций.
-  - Поле `amount` одинаково для всех позиций внутри одной ставки.
-- **Цель**: Получить таблицу `user_totals` с агрегатами по пользователям:
+  - У одного пользователя много ставок.
+  - У каждой ставки несколько позиций.
+  - `amount` одинаков для всех позиций внутри одной ставки.
+- **Цель**: Таблица `user_totals` с агрегатами:
 
   ```
   user | amount
@@ -18,125 +18,129 @@
 
   где `amount` — сумма уникальных ставок, а не позиций.
 - **Условия**:
-  - Данные поступают в потоке, объем — миллионы строк.
-  - Подсчеты должны быть инкрементальными.
-  - Нельзя использовать `OPTIMIZE` (чтобы не перегружать базу).
-  - Нельзя использовать `FINAL` в материализованных представлениях (MV).
+  - Данные потоковые, объем — миллионы строк.
+  - Подсчеты инкрементальные.
+  - Без `OPTIMIZE` и `FINAL`.
 
 ## Структура проекта
 
-- `generate_bets.py`: Скрипт для генерации 1 млн строк тестовых данных в файл `raw_bets_1m.csv`.
-- `setup.sql`: SQL-скрипт для создания таблиц и материализованных представлений в ClickHouse.
-- `raw_bets_1m.csv`: Сгенерированный файл с данными (создается после запуска `generate_bets.py`).
-- `README.md`: Этот файл с документацией.
+- `generate_bets.py`: Генерирует 1 млн строк в `raw_bets_1m.csv`.
+- `setup.sql`: Создает таблицы и MV в ClickHouse.
+- `raw_bets_1m.csv`: Сгенерированный файл данных.
+- `README.md`: Документация.
 
 ## Требования
 
-- **Python 3.8+**: Для запуска генератора данных.
-- Установите зависимости: `pip install faker`
-- **ClickHouse**: Установленный сервер (локально или в облаке).
-  - Рекомендуемая версия: 23.8 или новее.
-- **Дисковое пространство**: ~200 МБ для 1 млн строк в CSV.
+- **Python 3.8+**: `pip install faker`
+- **ClickHouse**: Версия 23.8+.
+- **Диск**: ~200 МБ для 1 млн строк.
 
 ## Установка и запуск
 
-### 1. Генерация тестовых данных
+### 1. Генерация данных
 
-1. Сохраните `generate_bets.py` в корневую папку проекта.
+1. Сохраните `generate_bets.py`.
 2. Установите зависимости:
    ```bash
    pip install faker
    ```
-3. Запустите скрипт:
+3. Запустите:
    ```bash
    python generate_bets.py
    ```
-   Результат: файл `raw_bets_1m.csv` с 1 млн строк.
 
 ### 2. Настройка ClickHouse
 
-1. Сохраните `setup.sql` в корневую папку проекта.
-2. Подключитесь к ClickHouse и выполните скрипт:
-   ```bash
-   clickhouse-client < setup.sql
-   ```
-   Создаются:
-   - Таблица `raw_bets` (ReplacingMergeTree).
-   - Таблица `unique_orders` (MergeTree) и MV `mv_unique_orders`.
-   - Таблица `user_totals` (SummingMergeTree) и MV `mv_user_totals`.
+Запустите контейнер (если не запущен):
+```bash
+docker run -d --name clickhouse-server -p 9000:9000 clickhouse/clickhouse-server
+```
+Скопируйте и выполните `setup.sql`:
+```bash
+docker cp setup.sql clickhouse-server:/tmp/setup.sql
+docker exec -i clickhouse-server clickhouse-client < setup.sql
+```
 
 ### 3. Импорт данных
 
-Импортируйте сгенерированные данные в `raw_bets`:
+Скопируйте и загрузите данные:
 ```bash
-clickhouse-client --query="INSERT INTO raw_bets FORMAT CSVWithNames" < raw_bets_1m.csv
-```
-Время выполнения: ~5-10 секунд для 1 млн строк на современном сервере.
-
-### 4. Проверка результата
-
-Посмотрите промежуточные данные:
-```sql
-SELECT * FROM unique_orders ORDER BY user, order LIMIT 10;
-```
-Проверьте итоговые агрегаты:
-```sql
-SELECT * FROM user_totals ORDER BY user LIMIT 10;
+docker cp raw_bets_1m.csv clickhouse-server:/tmp/raw_bets_1m.csv
+docker exec -i clickhouse-server clickhouse-client --query="INSERT INTO raw_bets_buffer FORMAT CSVWithNames" < raw_bets_1m.csv
 ```
 
-## Архитектура решения
+### 4. Проверка
 
-- **raw_bets**:
-  - Движок: ReplacingMergeTree.
-  - Партиционирование: toYYYYMM(bet_date).
-  - Используется для дедупликации на случай дублирующих вставок.
-- **mv_unique_orders**:
-  - Исключает дубли `amount` внутри одной ставки с помощью `argMin(amount, order_position)`.
-  - Результат записывается в `unique_orders` (MergeTree).
-- **mv_user_totals**:
-  - Агрегирует сумму по пользователям.
-  - Результат идет в `user_totals` (SummingMergeTree) для инкрементального суммирования.
+```bash
+docker exec -it clickhouse-server clickhouse-client --query="SELECT * FROM user_totals ORDER BY user LIMIT 5"
+```
 
-## Пример данных
+## Архитектура
 
-### Входные данные (raw_bets):
+- **raw_bets_buffer**: Буфер для потоковых вставок.
+- **raw_bets**: Хранит сырые данные (MergeTree).
+- **mv_unique_orders**: Дедуплицирует позиции через `argMin`, записывает в `unique_orders`.
+- **mv_user_totals**: Агрегирует суммы в `user_totals` (ReplacingMergeTree).
+
+## Пример
+
+### Вход (raw_bets):
 
 ```
 user,order,order_position,amount,bet_date
 1,1,1,100.00,2023-05-12 14:23:11
 1,1,2,100.00,2023-05-12 14:23:11
 1,2,1,50.00,2021-08-19 09:15:32
-2,3,1,75.00,2022-11-03 22:47:09
 ```
 
-### Промежуточные данные (unique_orders):
-
-```
-user | order | amount | bet_date
-1    | 1     | 100.00 | 2023-05-12 14:23:11
-1    | 2     | 50.00  | 2021-08-19 09:15:32
-2    | 3     | 75.00  | 2022-11-03 22:47:09
-```
-
-### Итоговые данные (user_totals):
+### Выход (user_totals):
 
 ```
 user | amount
 1    | 150.00
-2    | 75.00
 ```
 
 ## Оптимизация
 
-- **Партиционирование**: Используется `toYYYYMM(bet_date)` для эффективного управления данными за много лет.
-- **Инкрементальность**: Новые данные обрабатываются MV автоматически без пересчета старых.
-- **Масштабируемость**: Для больших объемов настройте `max_insert_threads`:
-  ```bash
-  clickhouse-client --max_insert_threads=8 --query="INSERT INTO raw_bets FORMAT CSVWithNames" < raw_bets_1m.csv
-  ```
+- **Партиционирование**: `toYYYYMM(bet_date)`.
+- **Дедупликация**: `argMin` в MV.
+- **Поток**: Buffer для вставок.
 
-## Дополнительные заметки
+## Замечания
 
-- **Буферная таблица**: В `setup.sql` есть опциональная таблица `raw_bets_buffer` для смягчения нагрузки при потоковой вставке. Используйте, если данные приходят через Kafka или другой поток.
-- **Расширение данных**: Измените `NUM_ROWS` в `generate_bets.py` для генерации 10 млн строк или больше.
-- **Дата**: Поле `bet_date` добавлено для реалистичности и партиционирования. Уберите, если не нужно.
+- Разовая инициализация в `setup.sql` учитывает существующие данные.
+- `ReplacingMergeTree` в `user_totals` хранит только актуальные суммы.
+
+---
+
+### Как запустить
+
+1. **Генерация данных:**
+   ```bash
+   python generate_bets.py
+   ```
+
+2. **Запуск ClickHouse (если не запущен):**
+   ```bash
+   docker run -d --name clickhouse-server -p 9000:9000 clickhouse/clickhouse-server
+   ```
+
+3. **Копирование и выполнение:**
+   ```bash
+   docker cp setup.sql clickhouse-server:/tmp/setup.sql
+   docker exec -i clickhouse-server clickhouse-client < setup.sql
+   docker cp raw_bets_1m.csv clickhouse-server:/tmp/raw_bets_1m.csv
+   docker exec -i clickhouse-server clickhouse-client --query="INSERT INTO raw_bets_buffer FORMAT CSVWithNames" < raw_bets_1m.csv
+   ```
+
+4. **Проверка:**
+   ```bash
+   docker exec -it clickhouse-server clickhouse-client --query="SELECT * FROM user_totals LIMIT 5"
+   ```
+
+## Финальные улучшения
+
+- **Buffer**: Обеспечивает плавную потоковую вставку.
+- **MergeTree вместо ReplacingMergeTree**: Убирает зависимость от асинхронного слияния.
+- **Инициализация**: Разовая вставка в конце `setup.sql` гарантирует учет всех данных.
+- **ReplacingMergeTree в user_totals**: Хранит только актуальные агрегации.
