@@ -1,4 +1,5 @@
 -- 1. Исходная таблица raw_bets
+
 CREATE TABLE raw_bets (
     user UInt32,
     order UInt32,
@@ -11,6 +12,7 @@ PARTITION BY toYYYYMM(bet_date) -- Партиции по месяцам
 ORDER BY (user, order, order_position);
 
 -- 2. Промежуточная таблица unique_orders (уникальные заказы)
+
 CREATE TABLE unique_orders (
     user UInt32,
     order UInt32,
@@ -21,6 +23,7 @@ PARTITION BY toYYYYMM(bet_date)
 ORDER BY (user, order);
 
 -- Материализованное представление для дедупликации позиций
+
 CREATE MATERIALIZED VIEW mv_unique_orders
 TO unique_orders
 AS
@@ -33,6 +36,7 @@ FROM raw_bets
 GROUP BY user, order;
 
 -- 3. Итоговая таблица user_totals (агрегаты по пользователям)
+
 CREATE TABLE user_totals (
     user UInt32,
     amount Decimal(15, 2)
@@ -40,6 +44,7 @@ CREATE TABLE user_totals (
 ORDER BY (user);
 
 -- Материализованное представление для агрегации по пользователям
+
 CREATE MATERIALIZED VIEW mv_user_totals
 TO user_totals
 AS
@@ -50,6 +55,7 @@ FROM unique_orders
 GROUP BY user;
 
 -- (Опционально) Таблица для проверки исходных данных
+
 CREATE TABLE raw_bets_buffer (
     user UInt32,
     order UInt32,
