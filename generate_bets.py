@@ -20,12 +20,12 @@ def generate_bets(num_rows, num_users, max_orders_per_user, max_positions_per_or
     rows_generated = 0
     while rows_generated < num_rows:
         user_id = random.randint(1, num_users)
-        num_orders = random.randint(1, min(max_orders_per_user, (num_rows - rows_generated) // max_positions_per_order))
+        num_orders = random.randint(1, max(1, min(max_orders_per_user, (num_rows - rows_generated) // max_positions_per_order)))
         
         for _ in range(num_orders):
             if rows_generated >= num_rows:
                 break
-            num_positions = random.randint(1, max_positions_per_order)
+            num_positions = random.randint(1, max(1, max_positions_per_order))
             amount = round(random.uniform(10.00, 500.00), 2)
             bet_date = fake.date_time_this_decade().strftime("%Y-%m-%d %H:%M:%S")
             
